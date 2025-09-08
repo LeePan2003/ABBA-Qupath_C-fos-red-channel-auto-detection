@@ -1,0 +1,1 @@
+# ABBA-Qupath_C-fos-red-channel-auto-detection
