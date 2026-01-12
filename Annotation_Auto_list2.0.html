@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <title>CSV重排：按 AnnotationName 将相同行聚在一起</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    :root { --bg:#f6f7fb; --card:#fff; --text:#1f2937; --muted:#6b7280; --accent:#2563eb; --border:#e5e7eb; }
+    *{box-sizing:border-box}
+    body{margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial; background:var(--bg); color:var(--text)}
+    .wrap{max-width:1100px; margin:28px auto; padding:0 16px}
+    .box{background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px 18px; box-shadow:0 6px 20px rgba(0,0,0,.06)}
+    h1{font-size:20px; margin:0 0 12px}
+    p.sub{color:var(--muted); margin:0 0 14px}
+    .controls{display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:12px 0 8px}
+    .btn{appearance:none; border:1px solid var(--border); background:var(--card); padding:8px 12px; border-radius:10px; cursor:pointer}
+    .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+    .btn:disabled{opacity:.5; cursor:not-allowed}
+    .chip{font-size:12px; padding:4px 8px; border:1px solid var(--border); border-radius:999px; color:var(--muted)}
+    .hint{font-size:12px; color:var(--muted)}
+    .drop{border:2px dashed var(--border); border-radius:12px; padding:16px; text-align:center; color:var(--muted)}
+    table{width:100%; border-collapse:collapse; margin-top:14px; font-size:13px}
+    th,td{border-bottom:1px solid var(--border); padding:8px 10px; text-align:left; vertical-align:top}
+    th{background:#f9fafb; position:sticky; top:0; z-index:1}
+    #status{margin-left:auto; color:var(--muted); font-size:12px}
+    .switch{display:flex; align-items:center; gap:8px}
+    .switch input{width:18px; height:18px}
+    .sr{position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="box">
+      <h1>按 <code>AnnotationName</code> 将相同行聚在一起</h1>
+      <p class="sub">默认保持每个 Annotation 在原文件中**首次出现的顺序**；如需按字母顺序分组，可勾选下面选项。</p>
+
+      <div class="controls">
+        <label class="btn">
+          选择 CSV 文件
+          <input id="file" type="file" accept=".csv,text/csv" class="sr">
+        </label>
+        <button id="download" class="btn primary" disabled>下载重排后的 CSV</button>
+        <span id="status" class="chip">未加载文件</span>
+      </div>
+
+      <div class="controls">
+        <label class="switch">
+          <input id="alphaSort" type="checkbox">
+          <span>按字母顺序分组（否则按首次出现顺序）</span>
+        </label>
+        <span class="hint">自动识别列名：优先 <code>AnnotationName</code>，若无则使用 <code>Annotation</code>。</span>
+      </div>
+
+      <div id="dropZone" class="drop">或将 CSV 拖拽到此处</div>
+
+      <div id="tableWrap"></div>
+    </div>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('file');
+    const dropZone = document.getElementById('dropZone');
+    const tableWrap = document.getElementById('tableWrap');
+    const statusEl = document.getElementById('status');
+    const downloadBtn = document.getElementById('download');
+    const alphaSortChk = document.getElementById('alphaSort');
+
+    let originalRows = [];
+    let headers = [];
+    let annKey = null; // 'AnnotationName' 或回退 'Annotation'
+    let outputRows = [];
+
+    function detectAnnotationKey(columns){
+      // 不区分大小写地寻找 AnnotationName / Annotation
+      const lower = new Map(columns.map(c => [c.toLowerCase(), c]));
+      if (lower.has('annotationname')) return lower.get('annotationname');
+      if (lower.has('annotation')) return lower.get('annotation');
+      return null;
+    }
+
+    function groupRows(rows, key, alphaSort=false){
+      // 按 key 聚类，保持每组内的原始行顺序
+      const groups = new Map();
+      const order = [];
+      for (const r of rows){
+        const k = (r[key] ?? '').toString();
+        if (!groups.has(k)){
+          groups.set(k, []);
+          order.push(k);
+        }
+        groups.get(k).push(r);
+      }
+      const finalOrder = alphaSort ? [...order].sort((a,b)=>a.localeCompare(b, 'zh-Hans-CN')) : order;
+      const out = [];
+      for (const k of finalOrder){
+        out.push(...groups.get(k));
+      }
+      return out;
+    }
+
+    function renderTable(rows, cols){
+      if (!rows.length){ tableWrap.innerHTML = ''; return; }
+      const thead = `<thead><tr>${cols.map(c=>`<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>`;
+      const tbody = `<tbody>${rows.map(r=>{
+        return `<tr>${cols.map(c => `<td>${escapeHtml(r[c] ?? '')}</td>`).join('')}</tr>`;
+      }).join('')}</tbody>`;
+      tableWrap.innerHTML = `<div style="overflow:auto; max-height:60vh; border:1px solid #e5e7eb; border-radius:10px">${`<table>${thead}${tbody}</table>`}</div>`;
+    }
+
+    function escapeHtml(s){
+      return String(s)
+        .replaceAll('&','&amp;')
+        .replaceAll('<','&lt;')
+        .replaceAll('>','&gt;')
+        .replaceAll('"','&quot;')
+        .replaceAll("'",'&#39;');
+    }
+
+    function handleParsed(results, fileName){
+      if (results.errors && results.errors.length){
+        console.warn(results.errors);
+      }
+      if (!results.data || !results.data.length){
+        statusEl.textContent = '未读取到数据';
+        return;
+      }
+      originalRows = results.data;
+      headers = results.meta && results.meta.fields ? results.meta.fields : Object.keys(originalRows[0] || {});
+      annKey = detectAnnotationKey(headers);
+
+      if (!annKey){
+        statusEl.textContent = '未找到 AnnotationName/Annotation 列';
+        downloadBtn.disabled = true;
+        tableWrap.innerHTML = '<p class="hint">请确认 CSV 包含 <code>AnnotationName</code> 或 <code>Annotation</code> 列。</p>';
+        return;
+      }
+
+      outputRows = groupRows(originalRows, annKey, alphaSortChk.checked);
+      renderTable(outputRows, headers);
+      statusEl.textContent = `已加载：${fileName}（按列 ${annKey} 分组）`;
+      downloadBtn.disabled = false;
+    }
+
+    function parseFile(file){
+      statusEl.textContent = '解析中...';
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        dynamicTyping: false,
+        complete: (res)=>handleParsed(res, file.name),
+        error: (err)=>{ statusEl.textContent = '解析失败：' + err?.message; }
+      });
+    }
+
+    // 事件：文件选择
+    fileInput.addEventListener('change', e=>{
+      const f = e.target.files?.[0];
+      if (f) parseFile(f);
+    });
+
+    // 事件：拖拽
+    ;['dragenter','dragover'].forEach(ev => {
+      dropZone.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); dropZone.style.borderColor='#9ca3af'; });
+    });
+    ;['dragleave','drop'].forEach(ev => {
+      dropZone.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); dropZone.style.borderColor=''; });
+    });
+    dropZone.addEventListener('drop', e=>{
+      const f = e.dataTransfer.files?.[0];
+      if (f) parseFile(f);
+    });
+
+    // 事件：切换排序方式
+    alphaSortChk.addEventListener('change', ()=>{
+      if (!originalRows.length || !annKey) return;
+      outputRows = groupRows(originalRows, annKey, alphaSortChk.checked);
+      renderTable(outputRows, headers);
+    });
+
+    // 下载
+    downloadBtn.addEventListener('click', ()=>{
+      if (!outputRows.length) return;
+      const csv = Papa.unparse({ fields: headers, data: outputRows });
+      // 为兼容 Excel，添加 UTF-8 BOM
+      const blob = new Blob(["\uFEFF"+csv], { type: "text/csv;charset=utf-8" });
+      const a = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      a.href = url;
+      a.download = 'sorted_annotations.csv';
+      document.body.appendChild(a);
+      a.click();
+      URL.revokeObjectURL(url);
+      a.remove();
+    });
+  </script>
+</body>
+</html>

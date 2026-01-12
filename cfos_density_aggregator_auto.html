@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>c-fos Density 汇总器（自动更全融合脑区）</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { padding: 24px; }
+    .dropzone {
+      border: 2px dashed #bbb;
+      border-radius: 10px;
+      padding: 22px;
+      text-align: center;
+      color: #666;
+      background: #fafafa;
+      transition: 0.2s;
+    }
+    .dropzone.dragover { border-color: #0d6efd; color: #0d6efd; background: #f3f8ff; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    table { font-size: 14px; }
+    .smallhelp { font-size: 13px; color: #666; }
+    textarea { resize: vertical; }
+    .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; background:#f1f3f5; margin: 2px 4px 2px 0; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container-fluid" style="max-width: 1300px;">
+    <div class="d-flex align-items-center justify-content-between mb-3">
+      <div>
+        <h1 class="h3 mb-1">c-fos density 汇总器（自动更全融合脑区）</h1>
+        <div class="smallhelp">
+          适配你这类“分类好的 CSV”。默认会自动把层号/子分区融合到更大的脑区（例如：ACAd1/2-3/5/6a → ACA，SSp-bfd1/2-3 → SSp，VIS* → VIS，AUD* → AUD）。
+        </div>
+      </div>
+      <div class="text-end">
+        <button id="btnDownloadAgg" class="btn btn-primary" disabled>下载汇总CSV</button>
+        <button id="btnDownloadMap" class="btn btn-outline-secondary ms-2" disabled>下载合并映射表</button>
+      </div>
+    </div>
+
+    <div class="row g-3">
+      <div class="col-lg-7">
+        <div id="dropzone" class="dropzone">
+          <div class="mb-2">把 CSV 拖进来，或点击选择文件</div>
+          <input id="fileInput" type="file" accept=".csv,text/csv" class="form-control" />
+          <div class="smallhelp mt-2">
+            必需字段：<span class="mono">AnnotationName</span>, <span class="mono">Channel</span>，以及 <span class="mono">Density_per_mm2</span>（或 <span class="mono">Cells</span> + 面积）。<br>
+            面积字段支持：<span class="mono">Area_corrected</span>（µm²，会自动 ÷1e6 变 mm²）或 <span class="mono">Area_mm2</span>。
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-5">
+        <div class="card">
+          <div class="card-body">
+            <h2 class="h5">融合与计算参数</h2>
+
+            <div class="mb-3">
+              <label for="thickness" class="form-label">切片厚度（mm）</label>
+              <input id="thickness" type="number" step="0.001" min="0.001" class="form-control" value="0.05">
+              <div class="smallhelp mt-1">50 µm = 0.05 mm（默认）</div>
+            </div>
+
+            <div class="mb-2">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="optStripLayer" checked>
+                <label class="form-check-label" for="optStripLayer">
+                  去掉皮层层号（仅当层号前一位是小写字母，避免误伤 CA1/CA3 这种）
+                </label>
+              </div>
+              <div class="smallhelp">
+                例：ACAd2/3 → ACAd；SSp-bfd6a → SSp-bfd
+              </div>
+            </div>
+
+            <div class="mb-2">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="optDashMerge" checked>
+                <label class="form-check-label" for="optDashMerge">
+                  若名称包含 “-”，合并到 “-” 前（例：SSp-bfd → SSp）
+                </label>
+              </div>
+            </div>
+
+            <div class="mb-2">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="optAuto3" checked>
+                <label class="form-check-label" for="optAuto3">
+                  自动合并到前三个字符（例：VISp/VISal/VISC → VIS；ORBvl/ORBl → ORB）
+                </label>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="optAuto2" checked>
+                <label class="form-check-label" for="optAuto2">
+                  自动合并两字母核团前缀（用于 AId/AIv/AIp→AI，SCd/SCi→SC，LGd/LGv→LG 等）
+                </label>
+              </div>
+
+              <label for="auto2List" class="form-label mt-2 mb-1">两字母前缀白名单（逗号分隔）</label>
+              <input id="auto2List" class="form-control" value="AI, SC, LG, LS, MG, MM, SN, TT, IC, EP, GP, AM, PM, TM">
+              <div class="smallhelp mt-1">
+                默认不包含 <span class="mono">MO</span>（避免把 MOp/MOs 合并）与 <span class="mono">PV</span>（避免把 PVH/PVT 混到一起）。
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <label for="overridePrefixes" class="form-label">手动覆盖：优先合并前缀（可选）</label>
+              <textarea id="overridePrefixes" class="form-control" rows="2" placeholder="例如：ACA, SSp, VIS"></textarea>
+              <div class="smallhelp mt-1">
+                如果你有非常明确的合并规则，把前缀写在这里；它会优先于自动规则。
+              </div>
+            </div>
+
+            <div class="mb-0">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="includeOverall" checked>
+                <label class="form-check-label" for="includeOverall">
+                  同时计算 Overall_Density_per_mm3（总细胞 / 总体积）
+                </label>
+              </div>
+              <div class="smallhelp">
+                需要 CSV 中有 <span class="mono">Cells</span> 与面积字段才会显示。
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-4">
+      <div class="d-flex align-items-center justify-content-between">
+        <h2 class="h5 mb-2">结果预览</h2>
+        <div id="status" class="smallhelp"></div>
+      </div>
+
+      <div class="smallhelp mb-2" id="topGroups"></div>
+
+      <div class="table-responsive">
+        <table class="table table-sm table-striped align-middle" id="resultTable">
+          <thead>
+            <tr>
+              <th>MergedRegion</th>
+              <th>Channel</th>
+              <th class="text-end">N_original_regions</th>
+              <th class="text-end">N_slices</th>
+              <th class="text-end">Total_Cells</th>
+              <th class="text-end">Total_Area_mm2</th>
+              <th class="text-end">Sum_Density_per_mm3</th>
+              <th class="text-end">Overall_Density_per_mm3</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="smallhelp">
+        你要的“先 ÷0.05mm 再相加”在 <span class="mono">Sum_Density_per_mm3</span>。<br>
+        <span class="mono">Overall_Density_per_mm3</span> 是“总细胞/总体积”意义上的体密度（建议参考），需要 Cells+面积。
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <script>
+    const dz = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+
+    const thicknessEl = document.getElementById('thickness');
+    const includeOverallEl = document.getElementById('includeOverall');
+
+    const optStripLayerEl = document.getElementById('optStripLayer');
+    const optDashMergeEl = document.getElementById('optDashMerge');
+    const optAuto3El = document.getElementById('optAuto3');
+    const optAuto2El = document.getElementById('optAuto2');
+    const auto2ListEl = document.getElementById('auto2List');
+    const overridePrefixesEl = document.getElementById('overridePrefixes');
+
+    const statusEl = document.getElementById('status');
+    const topGroupsEl = document.getElementById('topGroups');
+    const tableBody = document.querySelector('#resultTable tbody');
+
+    const btnDownloadAgg = document.getElementById('btnDownloadAgg');
+    const btnDownloadMap = document.getElementById('btnDownloadMap');
+
+    let lastRawRows = null;
+    let lastAggRows = null;
+    let lastMapRows = null;
+
+    function setStatus(msg, isError=false){
+      statusEl.textContent = msg;
+      statusEl.className = 'smallhelp ' + (isError ? 'text-danger' : '');
+    }
+
+    function toNumber(x){
+      if (x === null || x === undefined) return NaN;
+      if (typeof x === 'number') return x;
+      const s = String(x).trim();
+      if (s === '') return NaN;
+      const v = Number(s);
+      return Number.isFinite(v) ? v : NaN;
+    }
+
+    function getThickness(){
+      const t = toNumber(thicknessEl.value);
+      if (!Number.isFinite(t) || t <= 0) return null;
+      return t;
+    }
+
+    function escapeHtml(s){
+      return String(s ?? '').replace(/[&<>"']/g, (m) => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'
+      }[m]));
+    }
+
+    function fmt(x){
+      if (x === '' || x === null || x === undefined) return '';
+      const v = toNumber(x);
+      if (!Number.isFinite(v)) return '';
+      if (Math.abs(v) >= 1000) return v.toFixed(2);
+      if (Math.abs(v) >= 100) return v.toFixed(3);
+      return v.toFixed(4);
+    }
+
+    function normalizeRow(r){
+      const AnnotationName = r.AnnotationName ?? r.annotationname ?? r.Annotation ?? r.Region ?? r.region;
+      const Channel = r.Channel ?? r.channel ?? 'NA';
+      const Cells = toNumber(r.Cells ?? r.cells);
+      const Density_per_mm2 = toNumber(r.Density_per_mm2 ?? r.density_per_mm2 ?? r.Density ?? r.density);
+      const Area_corrected = toNumber(r.Area_corrected ?? r.area_corrected ?? r.AreaCorrected);
+      const Area_mm2 = toNumber(r.Area_mm2 ?? r.area_mm2);
+      const Image = r.Image ?? r.image ?? null;
+      return { AnnotationName, Channel, Cells, Density_per_mm2, Area_corrected, Area_mm2, Image };
+    }
+
+    function parsePrefixList(raw){
+      const list = String(raw ?? '').split(',').map(s => s.trim()).filter(Boolean);
+      list.sort((a,b) => b.length - a.length); // longest-first
+      return list;
+    }
+
+    function stripCorticalLayer(name){
+      // remove layer suffix only when preceding char is lowercase (avoid CA1)
+      // supports 2/3, 6a, 6b, 1,4,5,6
+      const m = name.match(/(2\/3|6a|6b|1|4|5|6)$/);
+      if (!m) return name;
+      const suf = m[0];
+      const idx = name.length - suf.length;
+      if (idx > 0 && /[a-z]/.test(name[idx-1])) return name.slice(0, idx);
+      return name;
+    }
+
+    function mergedRegionFromName(name){
+      let n = String(name ?? '').trim();
+      if (!n) return '';
+
+      
+      // 特例：DG 不合并（保留 DG-mo / DG-po / DG-sg 等原始名称）
+      if (n === 'DG' || n.startsWith('DG-')) return n;
+
+
+      // 特例：GU（gustatory cortex）常用两字母+层号写法（GU1, GU2/3, GU6a...），统一合并到 GU
+      if (/^GU(\d|$)/.test(n)) return 'GU';
+// 0) manual overrides win
+      const overrides = parsePrefixList(overridePrefixesEl.value);
+      for (const p of overrides){
+        if (n.startsWith(p)) return p;
+      }
+
+      // 1) strip layer
+      if (optStripLayerEl.checked) n = stripCorticalLayer(n);
+
+      // 2) dash merge
+      if (optDashMergeEl.checked && n.includes('-')) n = n.split('-')[0].trim();
+
+      // 3) auto 2-letter merge (dv style)
+      if (optAuto2El.checked && n.length >= 3){
+        const p2 = n.slice(0,2);
+        const c3 = n[2];
+        const allow2 = new Set(parsePrefixList(auto2ListEl.value).map(x => x.toUpperCase()));
+        if (/^[A-Z]{2}$/.test(p2) && /[a-z]/.test(c3) && allow2.has(p2)){
+          return p2;
+        }
+      }
+
+      // 4) auto 3-letter merge
+      if (optAuto3El.checked && n.length >= 3){
+        const p3 = n.slice(0,3);
+        if (/^[A-Za-z]{3}$/.test(p3)) return p3;
+      }
+
+      return n;
+    }
+
+    function computeAgg(rows){
+      const thickness = getThickness();
+      if (!thickness) throw new Error('切片厚度（mm）无效，请填写大于0的数字。');
+
+      const cleaned = rows.map(normalizeRow).filter(r => r.AnnotationName != null && String(r.AnnotationName).trim() !== '');
+      if (cleaned.length === 0) throw new Error('未检测到 AnnotationName。请确认 CSV 包含列：AnnotationName。');
+
+      const agg = new Map();
+      const mapRows = new Map(); // AnnotationName -> MergedRegion (first seen)
+
+      for (const r of cleaned){
+        const anno = String(r.AnnotationName).trim();
+        const merged = mergedRegionFromName(anno);
+        if (!merged) continue;
+
+        mapRows.set(anno, merged);
+
+        const ch = String(r.Channel ?? 'NA').trim();
+        const key = merged + '||' + ch;
+
+        // area in mm2
+        let area_mm2 = NaN;
+        if (Number.isFinite(r.Area_corrected)) area_mm2 = r.Area_corrected / 1e6;
+        else if (Number.isFinite(r.Area_mm2)) area_mm2 = r.Area_mm2;
+
+        // density per mm2
+        let d_mm2 = r.Density_per_mm2;
+        if (!Number.isFinite(d_mm2) && Number.isFinite(r.Cells) && Number.isFinite(area_mm2) && area_mm2 > 0){
+          d_mm2 = r.Cells / area_mm2;
+        }
+        if (!Number.isFinite(d_mm2)) continue;
+
+        const d_mm3 = d_mm2 / thickness;
+
+        if (!agg.has(key)){
+          agg.set(key, {
+            MergedRegion: merged,
+            Channel: ch,
+            OriginalRegions: new Set(),
+            SliceSet: new Set(),
+            Total_Cells: 0,
+            Total_Area_mm2: 0,
+            Sum_Density_per_mm3: 0,
+          });
+        }
+
+        const g = agg.get(key);
+        g.OriginalRegions.add(anno);
+
+        if (r.Image != null && String(r.Image).trim() !== '') g.SliceSet.add(String(r.Image).trim());
+        else g.SliceSet.add('__row_' + Math.random().toString(16).slice(2));
+
+        if (Number.isFinite(r.Cells)) g.Total_Cells += r.Cells;
+        if (Number.isFinite(area_mm2)) g.Total_Area_mm2 += area_mm2;
+
+        g.Sum_Density_per_mm3 += d_mm3;
+      }
+
+      const out = Array.from(agg.values()).map(g => {
+        const N_slices = g.SliceSet.size;
+        const N_original_regions = g.OriginalRegions.size;
+        let overall = '';
+        if (includeOverallEl.checked && Number.isFinite(g.Total_Cells) && Number.isFinite(g.Total_Area_mm2) && g.Total_Area_mm2 > 0){
+          overall = g.Total_Cells / (g.Total_Area_mm2 * thickness);
+        }
+        return {
+          MergedRegion: g.MergedRegion,
+          Channel: g.Channel,
+          N_original_regions,
+          N_slices,
+          Total_Cells: g.Total_Cells || '',
+          Total_Area_mm2: g.Total_Area_mm2 || '',
+          Sum_Density_per_mm3: g.Sum_Density_per_mm3,
+          Overall_Density_per_mm3: overall
+        };
+      });
+
+      out.sort((a,b) => (a.Channel.localeCompare(b.Channel) || a.MergedRegion.localeCompare(b.MergedRegion)));
+
+      const mapOut = Array.from(mapRows.entries()).sort((a,b)=>a[0].localeCompare(b[0])).map(([AnnotationName, MergedRegion]) => ({AnnotationName, MergedRegion}));
+
+      return {out, mapOut};
+    }
+
+    function renderTable(out){
+      tableBody.innerHTML = '';
+      for (const r of out.slice(0, 5000)){
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${escapeHtml(r.MergedRegion)}</td>
+          <td>${escapeHtml(r.Channel)}</td>
+          <td class="text-end">${r.N_original_regions}</td>
+          <td class="text-end">${r.N_slices}</td>
+          <td class="text-end">${fmt(r.Total_Cells)}</td>
+          <td class="text-end">${fmt(r.Total_Area_mm2)}</td>
+          <td class="text-end">${fmt(r.Sum_Density_per_mm3)}</td>
+          <td class="text-end">${fmt(r.Overall_Density_per_mm3)}</td>
+        `;
+        tableBody.appendChild(tr);
+      }
+    }
+
+    function renderTopGroups(mapRows){
+      // show top merged groups by number of original regions
+      const counts = new Map();
+      for (const r of mapRows){
+        counts.set(r.MergedRegion, (counts.get(r.MergedRegion) || 0) + 1);
+      }
+      const top = Array.from(counts.entries()).sort((a,b)=>b[1]-a[1]).slice(0, 12);
+      if (!top.length){ topGroupsEl.innerHTML = ''; return; }
+      const pills = top.map(([k,v]) => `<span class="pill"><span class="mono">${escapeHtml(k)}</span> × ${v}</span>`).join(' ');
+      topGroupsEl.innerHTML = `本文件识别的主要融合脑区（按原始脑区数量排序，Top 12）：<br>${pills}`;
+    }
+
+    function downloadCSV(rows, filename, header){
+      const lines = [header.join(',')];
+      for (const r of rows){
+        const line = header.map(h => {
+          const v = r[h];
+          const s = (v === null || v === undefined) ? '' : String(v);
+          if (s.includes(',') || s.includes('"') || s.includes('\n')) return '"' + s.replaceAll('"','""') + '"';
+          return s;
+        }).join(',');
+        lines.push(line);
+      }
+      const blob = new Blob([lines.join('\n')], {type: 'text/csv;charset=utf-8;'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function recompute(){
+      if (!lastRawRows) return;
+      try{
+        const {out, mapOut} = computeAgg(lastRawRows);
+        if (!out.length){
+          setStatus('没有可用行：请确认 CSV 至少包含 Density_per_mm2（或 Cells+Area）。', true);
+          btnDownloadAgg.disabled = true;
+          btnDownloadMap.disabled = true;
+          tableBody.innerHTML = '';
+          topGroupsEl.innerHTML = '';
+          return;
+        }
+        lastAggRows = out;
+        lastMapRows = mapOut;
+        renderTable(out);
+        renderTopGroups(mapOut);
+        btnDownloadAgg.disabled = false;
+        btnDownloadMap.disabled = false;
+        setStatus(`完成：共 ${out.length} 行（MergedRegion + Channel 汇总）。映射表包含 ${mapOut.length} 个原始脑区。`);
+      }catch(e){
+        console.error(e);
+        setStatus('处理失败：' + e.message, true);
+        btnDownloadAgg.disabled = true;
+        btnDownloadMap.disabled = true;
+        tableBody.innerHTML = '';
+        topGroupsEl.innerHTML = '';
+      }
+    }
+
+    function handleFile(file){
+      setStatus('正在读取 CSV…');
+      Papa.parse(file, {
+        header: true,
+        dynamicTyping: false,
+        skipEmptyLines: true,
+        complete: (res) => {
+          lastRawRows = res.data || [];
+          recompute();
+        }
+      });
+    }
+
+    fileInput.addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (f) handleFile(f);
+    });
+
+    // Drag & drop
+    ['dragenter','dragover'].forEach(evt => {
+      dz.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dz.classList.add('dragover'); });
+    });
+    ['dragleave','drop'].forEach(evt => {
+      dz.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover'); });
+    });
+    dz.addEventListener('drop', (e) => {
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) { fileInput.value = ''; handleFile(f); }
+    });
+
+    // Recompute on parameter changes
+    [thicknessEl, includeOverallEl, optStripLayerEl, optDashMergeEl, optAuto3El, optAuto2El, auto2ListEl, overridePrefixesEl].forEach(el => {
+      el.addEventListener('change', () => { if (lastRawRows) recompute(); });
+      el.addEventListener('input', () => { if (el === overridePrefixesEl || el === auto2ListEl) { if (lastRawRows) recompute(); } });
+    });
+
+    btnDownloadAgg.addEventListener('click', () => {
+      if (!lastAggRows) return;
+      const header = ['MergedRegion','Channel','N_original_regions','N_slices','Total_Cells','Total_Area_mm2','Sum_Density_per_mm3','Overall_Density_per_mm3'];
+      downloadCSV(lastAggRows, 'cfos_density_merged_regions_sum_after_div_thickness.csv', header);
+    });
+
+    btnDownloadMap.addEventListener('click', () => {
+      if (!lastMapRows) return;
+      const header = ['AnnotationName','MergedRegion'];
+      downloadCSV(lastMapRows, 'region_merge_mapping.csv', header);
+    });
+
+    setStatus('请选择或拖入一个 CSV 文件开始。');
+  </script>
+</body>
+</html>
